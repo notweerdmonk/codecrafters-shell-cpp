@@ -152,8 +152,13 @@ void tokenize(const std::string &line, int &argc, char **&argv) {
   std::vector<std::string> tokens;
 
   while (std::getline(iss, token, ' ')) {
-    lstrip<>(token, "\"");
-    rstrip<>(token, "\"");
+    if (!lstrip<>(token, "\"")) {
+      lstrip<>(token, "'");
+    }
+    if (!rstrip<>(token, "\"")) {
+      rstrip<>(token, "'");
+    }
+
     tokens.push_back(token);
   }
 
@@ -235,6 +240,24 @@ class cmd_exit : public command {
   }
 };
 
+class cmd_echo : public command {
+  public:
+  cmd_echo() : command("echo", nullptr) {
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    for (std::size_t i = 1; i < argc; i++) {
+      std::cout << argv[i];
+      if (i < argc - 1) {
+        std::cout << ' ';
+      }
+    }
+    std::cout << '\n';
+
+    return 0;
+  }
+};
+
 int main() {
   int ret = 0;
 
@@ -245,6 +268,7 @@ int main() {
   shell_context ctx;
 
   ctx.cmdproc.add(std::make_shared<cmd_exit>());
+  ctx.cmdproc.add(std::make_shared<cmd_echo>());
 
   while (!ctx.exit_condition) {
     std::cout << "$ ";
