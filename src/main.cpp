@@ -3,11 +3,15 @@
 #include <sstream>
 #include <vector>
 #include <functional>
+#include <memory>
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <errno.h>
 #include <getopt.h>
+
+/* Forward declaration */
+struct shell_context;
 
 class command {
   std::string name;
@@ -23,26 +27,28 @@ class command {
     return name;
   }
 
-  virtual int operator()(int argc, char **argv) = 0;
+  virtual int operator()(shell_context &ctx, int argc, char **argv) = 0;
+
+  virtual ~command() = default;
 };
 
 class cmdprocessor {
-  std::vector<command*> commands;
+  std::vector<std::shared_ptr<command>> commands;
 
   public:
   cmdprocessor() : commands() {
   }
 
-  std::size_t add(command *pcmd) {
+  std::size_t add(std::shared_ptr<command> pcmd) {
     commands.push_back(pcmd);
     return commands.size() - 1;
   }
 
-  int operator()(int argc, char **argv) {
+  int operator()(shell_context &ctx, int argc, char **argv) {
     auto it = std::find_if(
         commands.begin(),
         commands.end(),
-        [argv](command *pcmd) {
+        [argv](std::shared_ptr<command> pcmd) {
           return pcmd->getname() == argv[0];
         }
       );
@@ -52,7 +58,19 @@ class cmdprocessor {
       return -1;
     }
 
-    return (*(*it))(argc, argv);
+    return (*(*it))(ctx, argc, argv);
+  }
+};
+
+struct shell_context {
+  std::atomic<bool> exit_condition;
+  cmdprocessor cmdproc;
+
+  shell_context() : exit_condition(false) {
+  }
+
+  void exit() {
+    exit_condition = true;
   }
 };
 
@@ -100,16 +118,36 @@ void tokenize(const std::string &line, int &argc, char **&argv) {
   argc = tokens.size();
 }
 
-std::atomic<bool> exit_condition;
+class cmd_exit : public command {
+  public:
+  cmd_exit() : command("exit", nullptr) {
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    int ret = 0;
+
+    if (argc == 2) {
+      ret = std::atoi(argv[1]);
+    }
+
+    ctx.exit();
+
+    return ret;
+  }
+};
 
 int main() {
+  int ret = 0;
+
   // Flush after every std::cout / std:cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
 
-  cmdprocessor cmdproc;
+  shell_context ctx;
 
-  while (!exit_condition) {
+  ctx.cmdproc.add(std::make_shared<cmd_exit>());
+
+  while (!ctx.exit_condition) {
     std::cout << "$ ";
   
     std::string input;
@@ -121,6 +159,8 @@ int main() {
 
     tokenize(input, argc, argv);
 
-    int ret = cmdproc(argc, argv);
+    ret = ctx.cmdproc(ctx, argc, argv);
   }
+
+  return ret;
 }
