@@ -7,13 +7,85 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <errno.h>
 #include <getopt.h>
+
+/* String convenience */
+
+template<typename CharT = char,
+         typename Traits = std::char_traits<CharT>,
+         typename Allocator = std::allocator<CharT>>
+std::size_t rstrip(std::basic_string<CharT, Traits, Allocator>& str,
+    const std::basic_string<CharT, Traits, Allocator>& chars) {
+  std::size_t count = 0;
+  std::size_t endpos = str.find_last_not_of(chars);
+  if (endpos != std::basic_string<CharT>::npos) {
+    count = str.size() - endpos - 1;
+    str.erase(endpos + 1);
+  } else {
+    count = str.size();
+    str.clear();
+  }
+  return count;
+}
+
+template<typename CharT = char,
+         typename Traits = std::char_traits<CharT>,
+         typename Allocator = std::allocator<CharT>>
+std::size_t rstrip(std::basic_string<CharT, Traits, Allocator>& str,
+    const char* chars) {
+  std::basic_string<CharT, Traits, Allocator> charstr(chars);
+  std::size_t count = 0;
+  std::size_t endpos = str.find_last_not_of(charstr);
+  if (endpos != std::basic_string<CharT>::npos) {
+    count = str.size() - endpos - 1;
+    str.erase(endpos + 1);
+  } else {
+    count = str.size();
+    str.clear();
+  }
+  return count;
+}
+
+template<typename CharT = char,
+         typename Traits = std::char_traits<CharT>,
+         typename Allocator = std::allocator<CharT>>
+std::size_t lstrip(std::basic_string<CharT, Traits, Allocator>& str,
+    const std::basic_string<CharT, Traits, Allocator>& chars) {
+  std::size_t original_size = str.size();
+  std::size_t new_start = str.find_first_not_of(chars);
+  if (new_start == std::basic_string<CharT>::npos) {
+    str.clear();
+    return original_size;
+  } else {
+    str.erase(0, new_start);
+    return new_start;
+  }
+}
+
+template<typename CharT = char,
+         typename Traits = std::char_traits<CharT>,
+         typename Allocator = std::allocator<CharT>>
+std::size_t lstrip(std::basic_string<CharT, Traits, Allocator>& str,
+    const char* chars) {
+  std::basic_string<CharT, Traits, Allocator> charstr(chars);
+  std::size_t original_size = str.size();
+  std::size_t new_start = str.find_first_not_of(charstr);
+  if (new_start == std::basic_string<CharT>::npos) {
+    str.clear();
+    return original_size;
+  } else {
+    str.erase(0, new_start);
+    return new_start;
+  }
+}
 
 /* Forward declaration */
 struct shell_context;
 
 class command {
+  protected:
   std::string name;
   struct option *plongopts;
 
@@ -80,6 +152,8 @@ void tokenize(const std::string &line, int &argc, char **&argv) {
   std::vector<std::string> tokens;
 
   while (std::getline(iss, token, ' ')) {
+    lstrip<>(token, "\"");
+    rstrip<>(token, "\"");
     tokens.push_back(token);
   }
 
@@ -118,6 +192,11 @@ void tokenize(const std::string &line, int &argc, char **&argv) {
   argc = tokens.size();
 }
 
+/*
+ * Exit code 0        Success
+ * Exit code 1        General errors, Miscellaneous errors, such as "divide by zero" and other impermissible operations
+ * Exit code 2        Misuse of shell builtins (according to Bash documentation)
+ */
 class cmd_exit : public command {
   public:
   cmd_exit() : command("exit", nullptr) {
@@ -126,8 +205,28 @@ class cmd_exit : public command {
   int operator()(shell_context &ctx, int argc, char **argv) {
     int ret = 0;
 
-    if (argc == 2) {
-      ret = std::atoi(argv[1]);
+    std::cout << "exit\n";
+
+    for (std::size_t i = 1; i < argc; i++) {
+      if (i > 1) {
+        std::cout << "shell: " << name << ": too many arguments\n";
+        return 1;
+      }
+
+      ret = std::atoi(argv[i]);
+      for (std::size_t j = 0; j < strlen(argv[i]); j++) {
+        if (!std::isdigit(argv[i][j])) {
+          std::cout << "shell: " << name << ": " << argv[i]
+            << ": numeric argument required\n";
+
+          ret = 2;
+          break;
+        }
+      }
+
+      if (ret == 2) {
+        break;
+      }
     }
 
     ctx.exit();
