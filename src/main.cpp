@@ -1,12 +1,126 @@
 #include <iostream>
+#include <string>
+#include <sstream>
+#include <vector>
+#include <functional>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <errno.h>
+#include <getopt.h>
+
+class command {
+  std::string name;
+  struct option *plongopts;
+
+  public:
+  command(const std::string &name_, struct option *plongopts_ = nullptr)
+    : name(name_),
+      plongopts(plongopts_) {
+  }
+
+  std::string& getname() {
+    return name;
+  }
+
+  virtual int operator()(int argc, char **argv) = 0;
+};
+
+class cmdprocessor {
+  std::vector<command*> commands;
+
+  public:
+  cmdprocessor() : commands() {
+  }
+
+  std::size_t add(command *pcmd) {
+    commands.push_back(pcmd);
+    return commands.size() - 1;
+  }
+
+  int operator()(int argc, char **argv) {
+    auto it = std::find_if(
+        commands.begin(),
+        commands.end(),
+        [argv](command *pcmd) {
+          return pcmd->getname() == argv[0];
+        }
+      );
+
+    if (it == commands.end()) {
+      std::cout << argv[0] << ": command not found\n";
+      return -1;
+    }
+
+    return (*(*it))(argc, argv);
+  }
+};
+
+void tokenize(const std::string &line, int &argc, char **&argv) {
+  std::istringstream iss(line);
+  std::string token;
+  std::vector<std::string> tokens;
+
+  while (std::getline(iss, token, ' ')) {
+    tokens.push_back(token);
+  }
+
+  argv = (char**)malloc(tokens.size() * sizeof(char*));
+  if (!argv) {
+    std::cerr << "Malloc failed: " << strerror(errno) << '\n';
+    return;
+  }
+
+  std::size_t i = 0;
+  bool failed = false;
+  for (auto &token : tokens) {
+    argv[i] = (char*)malloc(token.length() * sizeof(char));
+    if (!argv[i]) {
+      std::cerr << "Malloc failed: " << strerror(errno) << '\n';
+      failed = true;
+      break;
+    }
+
+    strncpy(argv[i], token.c_str(), token.length());
+
+    ++i;
+  }
+
+  if (failed) {
+    for (std::size_t j = 0; j < i; j++) {
+      free(argv[j]);
+      argv[j] = nullptr;
+    }
+    free(argv);
+    argv = nullptr;
+
+    return;
+  }
+
+  argc = tokens.size();
+}
+
+std::atomic<bool> exit_condition;
 
 int main() {
   // Flush after every std::cout / std:cerr
   std::cout << std::unitbuf;
   std::cerr << std::unitbuf;
 
-  std::cout << "$ ";
+  cmdprocessor cmdproc;
+
+  while (!exit_condition) {
+    std::cout << "$ ";
   
-  std::string input;
-  std::getline(std::cin, input);
+    std::string input;
+    std::getline(std::cin, input);
+
+
+    int argc;
+    char **argv;
+
+    tokenize(input, argc, argv);
+
+    int ret = cmdproc(argc, argv);
+  }
 }
