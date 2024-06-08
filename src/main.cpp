@@ -10,6 +10,7 @@
 #include <cctype>
 #include <errno.h>
 #include <getopt.h>
+#include <dirent.h>
 
 /* String convenience */
 
@@ -81,6 +82,112 @@ std::size_t lstrip(std::basic_string<CharT, Traits, Allocator>& str,
   }
 }
 
+/* Functions */
+void tokenize(const std::string &line, int &argc, char **&argv) {
+  std::istringstream iss(line);
+  std::string token;
+  std::vector<std::string> tokens;
+
+  while (std::getline(iss, token, ' ')) {
+    if (!lstrip<>(token, "\"")) {
+      lstrip<>(token, "'");
+    }
+    if (!rstrip<>(token, "\"")) {
+      rstrip<>(token, "'");
+    }
+
+    tokens.push_back(token);
+  }
+
+  argv = (char**)malloc(tokens.size() * sizeof(char*));
+  if (!argv) {
+    std::cerr << "Malloc failed: " << strerror(errno) << '\n';
+    return;
+  }
+
+  std::size_t i = 0;
+  bool failed = false;
+  for (auto &token : tokens) {
+    argv[i] = (char*)malloc(token.length() * sizeof(char));
+    if (!argv[i]) {
+      std::cerr << "Malloc failed: " << strerror(errno) << '\n';
+      failed = true;
+      break;
+    }
+
+    strncpy(argv[i], token.c_str(), token.length() + 1);
+
+    ++i;
+  }
+
+  if (failed) {
+    for (std::size_t j = 0; j < i; j++) {
+      free(argv[j]);
+      argv[j] = nullptr;
+    }
+    free(argv);
+    argv = nullptr;
+
+    return;
+  }
+
+  argc = tokens.size();
+}
+
+void freetokens(int argc, char **&argv) {
+  for (std::size_t i = 0; i < argc; i++) {
+    free(argv[i]);
+    argv[i] = nullptr;
+  }
+  free(argv);
+  argv = nullptr;
+}
+
+std::string getpath() {
+  char *path = secure_getenv("PATH");
+  if (!path) {
+    return "";
+  }
+
+  return std::string(path);
+}
+
+/* Used by filterdir */
+static std::string filtercmd;
+
+int filterdir(const struct dirent *pdir) {
+  if (!pdir) {
+    return 0;
+  }
+
+  return (strncmp(pdir->d_name, filtercmd.c_str(), 256) == 0);
+}
+
+std::string searchdir(const std::string &dir) {
+  std::string cmd;
+  struct dirent **namelist;
+  int n;
+
+  n = scandir(dir.c_str(), &namelist, filterdir, alphasort);
+  /* TODO: handle error */
+
+  if (n == 0) {
+    return cmd;
+  }
+
+  while (n--) {
+    if (strstr(namelist[n]->d_name, filtercmd.c_str()) != nullptr) {
+      cmd = dir + "/" + std::string(namelist[n]->d_name);
+    }
+    free(namelist[n]);
+  }
+  free(namelist);
+
+  return cmd;
+}
+
+/* Classes */
+
 /* Forward declaration */
 struct shell_context;
 
@@ -146,6 +253,7 @@ class cmdprocessor {
 struct shell_context {
   std::atomic<bool> exit_condition;
   cmdprocessor cmdproc;
+  std::vector<std::string> path;
 
   shell_context() : exit_condition(false) {
   }
@@ -154,61 +262,36 @@ struct shell_context {
     exit_condition = true;
   }
 
-  std::shared_ptr<command> find(const char *name) {
+  std::shared_ptr<command> findcmd(const char *name) {
     return cmdproc.find(name);
   }
+
+  void loadpath(const std::string &pathstr) {
+    std::istringstream iss(pathstr);
+    std::string dir;
+
+    while (std::getline(iss, dir, ':')) {
+      path.push_back(dir);
+    }
+  }
+  
+  void clearpath() {
+    path.clear();
+  }
+
+  std::string searchpath(const std::string &cmd) {
+    filtercmd = cmd;
+    for (auto & pathdir : path) {
+      std::string cmdpath = searchdir(pathdir);
+
+      if (!cmdpath.empty()) {
+        return cmdpath;
+      }
+    }
+
+    return "";
+  }
 };
-
-void tokenize(const std::string &line, int &argc, char **&argv) {
-  std::istringstream iss(line);
-  std::string token;
-  std::vector<std::string> tokens;
-
-  while (std::getline(iss, token, ' ')) {
-    if (!lstrip<>(token, "\"")) {
-      lstrip<>(token, "'");
-    }
-    if (!rstrip<>(token, "\"")) {
-      rstrip<>(token, "'");
-    }
-
-    tokens.push_back(token);
-  }
-
-  argv = (char**)malloc(tokens.size() * sizeof(char*));
-  if (!argv) {
-    std::cerr << "Malloc failed: " << strerror(errno) << '\n';
-    return;
-  }
-
-  std::size_t i = 0;
-  bool failed = false;
-  for (auto &token : tokens) {
-    argv[i] = (char*)malloc(token.length() * sizeof(char));
-    if (!argv[i]) {
-      std::cerr << "Malloc failed: " << strerror(errno) << '\n';
-      failed = true;
-      break;
-    }
-
-    strncpy(argv[i], token.c_str(), token.length());
-
-    ++i;
-  }
-
-  if (failed) {
-    for (std::size_t j = 0; j < i; j++) {
-      free(argv[j]);
-      argv[j] = nullptr;
-    }
-    free(argv);
-    argv = nullptr;
-
-    return;
-  }
-
-  argc = tokens.size();
-}
 
 /*
  * Exit code 0        Success
@@ -282,12 +365,17 @@ class cmd_type : public command {
     }
 
     for (std::size_t i = 1; i < argc; i++) {
-      if (ctx.find(argv[i]) != nullptr) {
+      if (ctx.findcmd(argv[i]) != nullptr) {
         std::cout << argv[i] << " is a shell builtin\n";
         continue;
       }
 
-      /* TODO: Else find executable in path */
+      /* Else find executable in path */
+      std::string cmdpath = ctx.searchpath(std::string(argv[i]));
+      if (!cmdpath.empty()) {
+        std::cout << argv[i] << " is " << cmdpath << '\n';
+        continue;
+      }
 
       std::cout << argv[i] << " not found\n";
     }
@@ -296,7 +384,7 @@ class cmd_type : public command {
   }
 };
 
-int main() {
+int main(int argc, char **argv, char **envp) {
   int ret = 0;
 
   // Flush after every std::cout / std:cerr
@@ -308,6 +396,10 @@ int main() {
   ctx.cmdproc.add(std::make_shared<cmd_exit>());
   ctx.cmdproc.add(std::make_shared<cmd_echo>());
   ctx.cmdproc.add(std::make_shared<cmd_type>());
+
+  /* Load path from env */
+  std::string pathstr = getpath();
+  ctx.loadpath(pathstr);
 
   while (!ctx.exit_condition) {
     std::cout << "$ ";
@@ -322,6 +414,8 @@ int main() {
     tokenize(input, argc, argv);
 
     ret = ctx.cmdproc(ctx, argc, argv);
+
+    freetokens(argc, argv);
   }
 
   return ret;
