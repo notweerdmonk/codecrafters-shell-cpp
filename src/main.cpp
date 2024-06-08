@@ -211,6 +211,7 @@ struct shell_context {
   std::atomic<bool> exit_condition;
   cmdprocessor cmdproc;
   std::vector<std::string> path;
+  std::string cwd;
 
   shell_context();
 
@@ -223,6 +224,10 @@ struct shell_context {
   void clearpath();
 
   std::string searchpath(const std::string &cmd);
+
+  std::string setcwd();
+
+  const std::string& getcwd() const;
 };
 
 class command {
@@ -307,7 +312,9 @@ int cmdprocessor::operator()(shell_context &ctx, int argc, char **argv) {
 }
 
 
-shell_context::shell_context() : exit_condition(false) {
+shell_context::shell_context()
+  : exit_condition(false),
+    cwd(setcwd()) {
 }
 
 void shell_context::exit() {
@@ -344,6 +351,19 @@ std::string shell_context::searchpath(const std::string &cmd) {
   return "";
 }
 
+std::string shell_context::setcwd() {
+  char *cwd = realpath(".", NULL);
+  if (!cwd) {
+    std::cerr << "realpath failed: " << strerror(errno) << '\n';
+    return "";
+  }
+
+  return std::string(cwd);
+}
+
+const std::string& shell_context::getcwd() const {
+  return cwd;
+}
 
 /*
  * Exit code 0        Success
@@ -436,6 +456,18 @@ class cmd_type : public command {
   }
 };
 
+class cmd_pwd : public command {
+  public:
+  cmd_pwd() : command("pwd", nullptr) {
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    std::cout << ctx.getcwd() << '\n';
+
+    return 0;
+  }
+};
+
 int main(int argc, char **argv, char **envp) {
   int ret = 0;
 
@@ -448,6 +480,7 @@ int main(int argc, char **argv, char **envp) {
   ctx.cmdproc.add(std::make_shared<cmd_exit>());
   ctx.cmdproc.add(std::make_shared<cmd_echo>());
   ctx.cmdproc.add(std::make_shared<cmd_type>());
+  ctx.cmdproc.add(std::make_shared<cmd_pwd>());
 
   /* Load path from env */
   std::string pathstr = getpath();
