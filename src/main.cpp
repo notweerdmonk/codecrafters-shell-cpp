@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <dirent.h>
+#include <limits.h>
 
 /* String convenience */
 
@@ -154,6 +155,15 @@ std::string getpath() {
   return std::string(path);
 }
 
+std::string gethomedir() {
+  char *homedir = secure_getenv("HOME");
+  if (!homedir) {
+    return "";
+  }
+
+  return std::string(homedir);
+}
+
 /* Used by filterdir */
 static std::string filtercmd;
 
@@ -186,6 +196,18 @@ std::string searchdir(const std::string &dir) {
   free(namelist);
 
   return cmd;
+}
+
+void patherror(const std::string &func, int error, const std::string &arg) {
+  switch (error) {
+    case ENOENT:
+    case ENOTDIR:
+      std::cerr << arg << ": ";
+      break;
+    default:
+      std::cerr << func << " failed: ";
+  }
+  std::cerr << strerror(errno) << '\n';
 }
 
 /* Classes */
@@ -225,7 +247,7 @@ struct shell_context {
 
   std::string searchpath(const std::string &cmd);
 
-  std::string setcwd();
+  std::string& setcwd(const std::string &newcwd = "");
 
   const std::string& getcwd() const;
 };
@@ -312,9 +334,8 @@ int cmdprocessor::operator()(shell_context &ctx, int argc, char **argv) {
 }
 
 
-shell_context::shell_context()
-  : exit_condition(false),
-    cwd(setcwd()) {
+shell_context::shell_context() : exit_condition(false) {
+  setcwd();
 }
 
 void shell_context::exit() {
@@ -351,14 +372,30 @@ std::string shell_context::searchpath(const std::string &cmd) {
   return "";
 }
 
-std::string shell_context::setcwd() {
-  char *cwd = realpath(".", NULL);
-  if (!cwd) {
-    std::cerr << "realpath failed: " << strerror(errno) << '\n';
-    return "";
+std::string& shell_context::setcwd(const std::string &newcwd) {
+  char *cwdstr = NULL;
+  if (!newcwd.empty()) {
+    cwdstr = realpath(newcwd.c_str(), NULL);
+
+  } else {
+    cwdstr = realpath(".", NULL);
+  }
+  if (!cwdstr) {
+    patherror("realpath", errno, newcwd);
+
+  } else {
+    if (chdir(cwdstr) != 0) {
+      patherror("chdir", errno, cwdstr);
+
+    } else {
+      cwd.clear();
+      cwd.append(cwdstr);
+    }
+
+    free(cwdstr);
   }
 
-  return std::string(cwd);
+  return cwd;
 }
 
 const std::string& shell_context::getcwd() const {
@@ -468,6 +505,41 @@ class cmd_pwd : public command {
   }
 };
 
+class cmd_cd : public command {
+  public:
+  cmd_cd() : command("cd", nullptr) {
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    std::string newcwd;
+
+    if (argc == 1) {
+      ctx.setcwd(gethomedir());
+
+    } else if (argc > 1) {
+      newcwd.append(argv[1]);
+
+      /* Substitute '~' */
+      std::string::size_type at = 0;
+      while ((at = newcwd.find('~', at)) != std::string::npos) {
+        newcwd.replace(at, 1, gethomedir());
+      }
+
+      char *cwdstr = realpath(newcwd.c_str(), NULL);
+      if (!cwdstr) {
+        patherror("realpath", errno, argv[1]);
+        return -1;
+      }
+
+      ctx.setcwd(cwdstr);
+
+      free(cwdstr);
+    }
+
+    return 0;
+  }
+};
+
 int main(int argc, char **argv, char **envp) {
   int ret = 0;
 
@@ -481,6 +553,7 @@ int main(int argc, char **argv, char **envp) {
   ctx.cmdproc.add(std::make_shared<cmd_echo>());
   ctx.cmdproc.add(std::make_shared<cmd_type>());
   ctx.cmdproc.add(std::make_shared<cmd_pwd>());
+  ctx.cmdproc.add(std::make_shared<cmd_cd>());
 
   /* Load path from env */
   std::string pathstr = getpath();
