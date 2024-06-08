@@ -116,21 +116,30 @@ class cmdprocessor {
     return commands.size() - 1;
   }
 
-  int operator()(shell_context &ctx, int argc, char **argv) {
+  std::shared_ptr<command> find(const char *name) {
     auto it = std::find_if(
         commands.begin(),
         commands.end(),
-        [argv](std::shared_ptr<command> pcmd) {
-          return pcmd->getname() == argv[0];
+        [name](std::shared_ptr<command> pcmd) {
+          return pcmd->getname() == name;
         }
       );
 
     if (it == commands.end()) {
+      return nullptr;
+    }
+
+    return *it;
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    std::shared_ptr<command> pcmd = find(argv[0]);
+    if (!pcmd) {
       std::cout << argv[0] << ": command not found\n";
       return -1;
     }
 
-    return (*(*it))(ctx, argc, argv);
+    return (*pcmd)(ctx, argc, argv);
   }
 };
 
@@ -143,6 +152,10 @@ struct shell_context {
 
   void exit() {
     exit_condition = true;
+  }
+
+  std::shared_ptr<command> find(const char *name) {
+    return cmdproc.find(name);
   }
 };
 
@@ -258,6 +271,31 @@ class cmd_echo : public command {
   }
 };
 
+class cmd_type : public command {
+  public:
+  cmd_type() : command("type", nullptr) {
+  }
+
+  int operator()(shell_context &ctx, int argc, char **argv) {
+    if (argc == 1) {
+      return 0;
+    }
+
+    for (std::size_t i = 1; i < argc; i++) {
+      if (ctx.find(argv[i]) != nullptr) {
+        std::cout << argv[i] << " is a shell builtin\n";
+        continue;
+      }
+
+      /* TODO: Else find executable in path */
+
+      std::cout << argv[i] << " not found\n";
+    }
+
+    return 1;
+  }
+};
+
 int main() {
   int ret = 0;
 
@@ -269,6 +307,7 @@ int main() {
 
   ctx.cmdproc.add(std::make_shared<cmd_exit>());
   ctx.cmdproc.add(std::make_shared<cmd_echo>());
+  ctx.cmdproc.add(std::make_shared<cmd_type>());
 
   while (!ctx.exit_condition) {
     std::cout << "$ ";
