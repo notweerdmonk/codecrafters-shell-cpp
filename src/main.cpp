@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cctype>
+#include <unistd.h>
+#include <sys/wait.h>
 #include <errno.h>
 #include <getopt.h>
 #include <dirent.h>
@@ -190,6 +192,38 @@ std::string searchdir(const std::string &dir) {
 
 /* Forward declaration */
 struct shell_context;
+class command;
+
+class cmdprocessor {
+  std::vector<std::shared_ptr<command>> commands;
+
+  public:
+  cmdprocessor();
+
+  std::size_t add(std::shared_ptr<command> pcmd);
+
+  std::shared_ptr<command> find(const char *name);
+
+  int operator()(shell_context &ctx, int argc, char **argv);
+};
+
+struct shell_context {
+  std::atomic<bool> exit_condition;
+  cmdprocessor cmdproc;
+  std::vector<std::string> path;
+
+  shell_context();
+
+  void exit();
+
+  std::shared_ptr<command> findcmd(const char *name);
+
+  void loadpath(const std::string &pathstr);
+
+  void clearpath();
+
+  std::string searchpath(const std::string &cmd);
+};
 
 class command {
   protected:
@@ -211,87 +245,105 @@ class command {
   virtual ~command() = default;
 };
 
-class cmdprocessor {
-  std::vector<std::shared_ptr<command>> commands;
+cmdprocessor::cmdprocessor() : commands() {
+}
 
-  public:
-  cmdprocessor() : commands() {
+std::size_t cmdprocessor::add(std::shared_ptr<command> pcmd) {
+  commands.push_back(pcmd);
+  return commands.size() - 1;
+}
+
+std::shared_ptr<command> cmdprocessor::find(const char *name) {
+  auto it = std::find_if(
+      commands.begin(),
+      commands.end(),
+      [name](std::shared_ptr<command> pcmd) {
+        return pcmd->getname() == name;
+      }
+    );
+
+  if (it == commands.end()) {
+    return nullptr;
   }
 
-  std::size_t add(std::shared_ptr<command> pcmd) {
-    commands.push_back(pcmd);
-    return commands.size() - 1;
+  return *it;
+}
+
+int cmdprocessor::operator()(shell_context &ctx, int argc, char **argv) {
+  int ret = 0;
+
+  std::shared_ptr<command> pcmd = find(argv[0]);
+  if (pcmd) {
+    return (*pcmd)(ctx, argc, argv);
   }
 
-  std::shared_ptr<command> find(const char *name) {
-    auto it = std::find_if(
-        commands.begin(),
-        commands.end(),
-        [name](std::shared_ptr<command> pcmd) {
-          return pcmd->getname() == name;
-        }
-      );
-
-    if (it == commands.end()) {
-      return nullptr;
-    }
-
-    return *it;
+  pid_t pid = fork();
+  if (pid == -1) {
+    /* handle error */
+    return -1;
   }
 
-  int operator()(shell_context &ctx, int argc, char **argv) {
-    std::shared_ptr<command> pcmd = find(argv[0]);
-    if (!pcmd) {
-      std::cout << argv[0] << ": command not found\n";
+  if (pid == 0) {
+    /* child */
+    execvp(argv[0], argv);
+
+    ctx.exit();
+
+    /* execvp failed */
+    if (errno != ENOENT) {
+      std::cerr << "execvp failed: " << strerror(errno) << '\n';
       return -1;
     }
 
-    return (*pcmd)(ctx, argc, argv);
-  }
-};
+  } else {
+    /* parent */
+    wait(&ret);
 
-struct shell_context {
-  std::atomic<bool> exit_condition;
-  cmdprocessor cmdproc;
-  std::vector<std::string> path;
-
-  shell_context() : exit_condition(false) {
+    return ret;
   }
 
-  void exit() {
-    exit_condition = true;
+  std::cout << argv[0] << ": command not found\n";
+  return -1;
+}
+
+
+shell_context::shell_context() : exit_condition(false) {
+}
+
+void shell_context::exit() {
+  exit_condition = true;
+}
+
+std::shared_ptr<command> shell_context::findcmd(const char *name) {
+  return cmdproc.find(name);
+}
+
+void shell_context::loadpath(const std::string &pathstr) {
+  std::istringstream iss(pathstr);
+  std::string dir;
+
+  while (std::getline(iss, dir, ':')) {
+    path.push_back(dir);
   }
+}
 
-  std::shared_ptr<command> findcmd(const char *name) {
-    return cmdproc.find(name);
-  }
+void shell_context::clearpath() {
+  path.clear();
+}
 
-  void loadpath(const std::string &pathstr) {
-    std::istringstream iss(pathstr);
-    std::string dir;
+std::string shell_context::searchpath(const std::string &cmd) {
+  filtercmd = cmd;
+  for (auto & pathdir : path) {
+    std::string cmdpath = searchdir(pathdir);
 
-    while (std::getline(iss, dir, ':')) {
-      path.push_back(dir);
+    if (!cmdpath.empty()) {
+      return cmdpath;
     }
   }
-  
-  void clearpath() {
-    path.clear();
-  }
 
-  std::string searchpath(const std::string &cmd) {
-    filtercmd = cmd;
-    for (auto & pathdir : path) {
-      std::string cmdpath = searchdir(pathdir);
+  return "";
+}
 
-      if (!cmdpath.empty()) {
-        return cmdpath;
-      }
-    }
-
-    return "";
-  }
-};
 
 /*
  * Exit code 0        Success
@@ -407,6 +459,9 @@ int main(int argc, char **argv, char **envp) {
     std::string input;
     std::getline(std::cin, input);
 
+    if (input.length() == 0) {
+      continue;
+    }
 
     int argc;
     char **argv;
